@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#D62828" />
+  <meta name="description" content="Pesan Baso Kuliner online — baso aci, baso urat, pentol & es jelly manggo. Antar area Tambun Utara, Bekasi." />
+  <title>Baso Kuliner — Pesan Online</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="assets/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Baso Kuliner" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- ===================== VIEW: MENU ===================== -->
+    <section id="view-menu" class="view active">
+      <header class="hero">
+        <div class="hero-top">
+          <div class="logo" aria-hidden="true">🍜</div>
+          <div>
+            <h1 id="brandName">Baso Kuliner</h1>
+            <a id="igLink" class="ig" target="_blank" rel="noopener">@basokuliner.id</a>
+          </div>
+          <span class="open-pill" id="openPill">● Buka</span>
+        </div>
+        <p class="tagline" id="tagline"></p>
+        <div class="hero-meta">
+          <span>📍 <span id="brandAddr"></span></span>
+          <span>🛵 Gratis ongkir ≤ <b id="freeKm">2</b> km</span>
+        </div>
+      </header>
+
+      <nav class="chips" id="categoryChips">
+        <button class="chip active" data-cat="all">Semua</button>
+        <button class="chip" data-cat="makanan">🍲 Makanan</button>
+        <button class="chip" data-cat="minuman">🥭 Minuman</button>
+      </nav>
+
+      <div id="menuList" class="menu-list"></div>
+      <div class="spacer"></div>
+    </section>
+
+    <!-- ===================== VIEW: CHECKOUT ===================== -->
+    <section id="view-checkout" class="view">
+      <div class="topbar">
+        <button class="icon-btn" data-go="menu" aria-label="Kembali">←</button>
+        <h2>Checkout</h2>
+        <span></span>
+      </div>
+
+      <div class="card">
+        <h3>Pesananmu</h3>
+        <div id="cartItems"></div>
+        <button class="link-btn" data-go="menu">+ Tambah menu lain</button>
+      </div>
+
+      <div class="card">
+        <h3>Titik Antar</h3>
+        <p class="hint">Geser pin merah atau ketuk peta untuk menentukan titik antar yang akurat.</p>
+        <div id="map" class="map"></div>
+        <button id="btnGps" class="btn btn-outline full">📡 Gunakan Lokasi Saya (GPS)</button>
+        <div id="distanceInfo" class="distance-info">Pin belum ditentukan</div>
+      </div>
+
+      <div class="card">
+        <h3>Data Pemesan</h3>
+        <label>Nama <input id="custName" type="text" placeholder="Nama kamu" autocomplete="name" /></label>
+        <label>No. WhatsApp <input id="custWa" type="tel" inputmode="tel" placeholder="08xxxxxxxxxx" autocomplete="tel" /></label>
+        <label>Patokan Alamat <textarea id="custAddr" rows="2" placeholder="Contoh: Blok C3 no. 12, pagar hitam depan musholla"></textarea></label>
+      </div>
+
+      <div class="card">
+        <h3>Metode Bayar</h3>
+        <div class="pay-options" id="payOptions">
+          <label class="pay"><input type="radio" name="pay" value="QRIS" /> <span>📱 QRIS</span></label>
+          <label class="pay"><input type="radio" name="pay" value="Transfer SeaBank" /> <span>🏦 Transfer SeaBank</span></label>
+          <label class="pay"><input type="radio" name="pay" value="COD" checked /> <span>💵 COD / Bayar di Tempat</span></label>
+        </div>
+        <button id="btnShowPay" class="link-btn hidden">Lihat info pembayaran</button>
+      </div>
+
+      <div class="card summary">
+        <div class="row"><span>Subtotal</span><span id="sumSubtotal">Rp 0</span></div>
+        <div class="row"><span>Ongkir <small id="sumDist"></small></span><span id="sumOngkir">-</span></div>
+        <div class="row total"><span>Total</span><span id="sumTotal">Rp 0</span></div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="checkout-bar">
+        <button id="btnOrder" class="btn btn-primary full">Pesan Sekarang via WhatsApp</button>
+      </div>
+    </section>
+
+    <!-- ===================== VIEW: RIWAYAT ===================== -->
+    <section id="view-history" class="view">
+      <div class="topbar"><span></span><h2>Riwayat Pesanan</h2><span></span></div>
+      <p class="hint pad">Riwayat tersimpan di perangkat ini.</p>
+      <div id="historyList"></div>
+      <div class="spacer"></div>
+    </section>
+
+    <!-- ===================== VIEW: KASIR ===================== -->
+    <section id="view-kasir" class="view">
+      <div id="pinGate" class="pin-gate">
+        <div class="pin-box">
+          <div class="logo big">🔒</div>
+          <h2>Mode Kasir</h2>
+          <p class="hint">Masukkan PIN untuk masuk</p>
+          <input id="pinInput" type="password" inputmode="numeric" maxlength="6" placeholder="••••" />
+          <button id="btnPin" class="btn btn-primary full">Masuk</button>
+          <p id="pinError" class="error"></p>
+        </div>
+      </div>
+
+      <div id="kasirApp" class="hidden">
+        <div class="topbar">
+          <span></span><h2>Kasir</h2>
+          <button id="btnLock" class="icon-btn" aria-label="Kunci">🔒</button>
+        </div>
+        <nav class="seg" id="kasirTabs">
+          <button class="active" data-ktab="pos">POS</button>
+          <button data-ktab="orders">Pesanan <span id="newBadge" class="badge hidden">0</span></button>
+          <button data-ktab="report">Laporan</button>
+        </nav>
+
+        <!-- POS -->
+        <div id="ktab-pos" class="ktab active">
+          <div class="pos-grid" id="posMenu"></div>
+          <div class="card">
+            <div class="seg small" id="posType">
+              <button class="active" data-type="Makan di Tempat">🍽️ Makan di Tempat</button>
+              <button data-type="Bungkus">🛍️ Bungkus</button>
+            </div>
+            <div id="posCart" class="pos-cart"></div>
+            <label>Nama / No. Meja (opsional) <input id="posName" type="text" placeholder="Meja 2 / Pak Budi" /></label>
+            <div class="seg small" id="posPay">
+              <button class="active" data-pay="Tunai">💵 Tunai</button>
+              <button data-pay="QRIS">📱 QRIS</button>
+            </div>
+            <div id="cashBox">
+              <label>Uang Diterima <input id="posCash" type="number" inputmode="numeric" placeholder="0" /></label>
+              <div class="quick-cash" id="quickCash"></div>
+            </div>
+            <div class="summary">
+              <div class="row total"><span>Total</span><span id="posTotal">Rp 0</span></div>
+              <div class="row" id="changeRow"><span>Kembalian</span><span id="posChange">Rp 0</span></div>
+            </div>
+            <div class="btn-row">
+              <button id="btnPosClear" class="btn btn-ghost">Reset</button>
+              <button id="btnPosSave" class="btn btn-primary">Simpan Transaksi</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ORDERS -->
+        <div id="ktab-orders" class="ktab">
+          <div class="card">
+            <details>
+              <summary><b>📥 Impor pesanan dari WhatsApp</b></summary>
+              <p class="hint">Order online dari HP customer tersimpan di HP customer. Salin pesan WA yang masuk, tempel di sini agar tercatat di kasir.</p>
+              <textarea id="importText" rows="5" placeholder="Tempel pesan WhatsApp pesanan di sini..."></textarea>
+              <button id="btnImport" class="btn btn-outline full">Impor Pesanan</button>
+            </details>
+          </div>
+          <div class="chips small" id="statusFilter"></div>
+          <div id="orderList"></div>
+        </div>
+
+        <!-- REPORT -->
+        <div id="ktab-report" class="ktab">
+          <div class="card">
+            <label>Tanggal <input id="reportDate" type="date" /></label>
+            <div class="stats" id="reportStats"></div>
+          </div>
+          <div class="card">
+            <h3>Porsi Terjual per Menu</h3>
+            <div id="reportItems"></div>
+          </div>
+          <div class="card">
+            <h3>Per Metode Bayar</h3>
+            <div id="reportPay"></div>
+          </div>
+          <div class="btn-row">
+            <button id="btnCsv" class="btn btn-outline">⬇️ Export CSV</button>
+            <button id="btnXls" class="btn btn-primary">⬇️ Export Excel</button>
+          </div>
+          <p class="hint pad">Export berisi detail per item untuk tanggal terpilih. Data tersimpan di browser perangkat kasir — export rutin sebagai cadangan.</p>
+        </div>
+        <div class="spacer"></div>
+      </div>
+    </section>
+
+    <!-- ===================== FLOATING CART ===================== -->
+    <button id="cartBar" class="cart-bar hidden" data-go="checkout">
+      <span class="cart-count"><span id="cartCount">0</span> item</span>
+      <span class="cart-label">Lihat Keranjang</span>
+      <span id="cartTotal" class="cart-total">Rp 0</span>
+    </button>
+
+    <!-- ===================== BOTTOM NAV ===================== -->
+    <nav class="bottom-nav" id="bottomNav">
+      <button class="active" data-go="menu"><span>🍜</span>Menu</button>
+      <button data-go="history"><span>🧾</span>Riwayat</button>
+      <button data-go="kasir"><span>🧮</span>Kasir</button>
+    </nav>
+  </div>
+
+  <!-- ===================== SHEET: ADD ITEM ===================== -->
+  <div id="itemSheet" class="sheet-backdrop hidden">
+    <div class="sheet">
+      <div id="sheetImg" class="sheet-img"></div>
+      <div class="sheet-body">
+        <h3 id="sheetName"></h3>
+        <p id="sheetDesc" class="hint"></p>
+        <p class="price" id="sheetPrice"></p>
+        <h4>Catatan</h4>
+        <div class="chips small wrap" id="sheetNotes"></div>
+        <textarea id="sheetNoteText" rows="2" placeholder="Catatan lain (opsional)"></textarea>
+        <div class="qty-row">
+          <div class="qty">
+            <button id="sheetMinus">−</button><span id="sheetQty">1</span><button id="sheetPlus">+</button>
+          </div>
+          <button id="sheetAdd" class="btn btn-primary">Tambah • <span id="sheetSubtotal"></span></button>
+        </div>
+      </div>
+      <button class="sheet-close" id="sheetClose" aria-label="Tutup">✕</button>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: PAYMENT INFO ===================== -->
+  <div id="payModal" class="sheet-backdrop hidden">
+    <div class="modal">
+      <button class="sheet-close" id="payClose" aria-label="Tutup">✕</button>
+      <div id="payContent"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/app.js"></script>
+  <script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));</script>
+</body>
+</html>

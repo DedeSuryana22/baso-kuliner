@@ -1,0 +1,10 @@
+{
+  "name": "baso-kuliner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistem order online + kasir POS Baso Kuliner (static site)",
+  "scripts": {
+    "dev": "npx --yes serve . -l 3000",
+    "test": "node tests/core.test.js"
+  }
+}
