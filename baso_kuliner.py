@@ -214,12 +214,14 @@ def gemini_chat(messages, json_mode=False, temperature=0.2):
         url = f"{os.environ.get('GEMINI_URL', 'https://generativelanguage.googleapis.com')}/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(url, data=body, method='POST',
                                      headers={'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY})
+        t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=25) as r:      # batasi agar customer tidak menunggu lama
                 res = json.loads(r.read().decode())
             parts = ((res.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
-            text = ''.join(p.get('text', '') for p in parts).strip()
+            text = ''.join(p.get('text', '') for p in parts if not p.get('thought')).strip()
             if text:
+                print(f'[ai] {model} OK {time.time() - t0:.1f}s' + (f' (setelah: {"; ".join(errors)})' if errors else ''), flush=True)
                 return text
             errors.append(f'{model}: jawaban kosong')
         except urllib.error.HTTPError as e:
