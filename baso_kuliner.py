@@ -49,9 +49,10 @@ OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen2.5:3b')   # bisa: llama3.2:3
 OLLAMA_TIMEOUT = 120                          # detik (laptop tanpa GPU bisa lambat)
 OPEN_BROWSER = True
 
-# PIN kasir DICEK DI SERVER (wajib diganti sebelum link publik dibagikan!)
-# PIN di js/config.js hanya dipakai versi GitHub Pages.
-KASIR_PIN = os.environ.get('BK_PIN', '1234')
+# >>>>>>>>>>>>>>>>>>>>>>  GANTI PIN KASIR DI SINI  <<<<<<<<<<<<<<<<<<<<<<
+KASIR_PIN = '1234'          # contoh: KASIR_PIN = '739215'   (pakai 6 digit)
+# PIN ini dicek di server. PIN di js/config.js hanya untuk versi GitHub Pages.
+KASIR_PIN = os.environ.get('BK_PIN', KASIR_PIN)
 
 # Link publik via Cloudflare Tunnel (gratis, HTTPS, bisa dibuka HP dari jaringan mana pun)
 PUBLIC_TUNNEL = os.environ.get('BK_TUNNEL', '1') != '0'
@@ -67,7 +68,9 @@ LIMITS = {
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DB_PATH = os.environ.get('BK_DB', os.path.join(DATA_DIR, 'baso_kuliner.db'))
-BLOCKED_PREFIXES = ('/data', '/tests', '/.git', '/node_modules', '/bin')
+# HANYA file aplikasi ini yang boleh diakses dari browser (aman walau folder berisi file lain)
+ALLOWED_FILES = {'/', '/index.html', '/manifest.json', '/sw.js', '/favicon.ico'}
+ALLOWED_DIRS = ('/css/', '/js/', '/vendor/', '/assets/')
 BIN_DIR = os.path.join(BASE_DIR, 'bin')
 PUBLIC_URL = None
 BLOCKED_EXT = ('.py', '.pyc', '.db', '.sqlite')
@@ -437,8 +440,8 @@ class Handler(SimpleHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path.startswith('/api/'):
             return self.api('GET', url)
-        low = url.path.lower()
-        if low.startswith(BLOCKED_PREFIXES) or low.endswith(BLOCKED_EXT):
+        path = url.path
+        if '..' in path or not (path in ALLOWED_FILES or path.startswith(ALLOWED_DIRS)) or path.lower().endswith(BLOCKED_EXT):
             return self.send_error(404)
         return super().do_GET()
 
