@@ -32,11 +32,15 @@
   const myIds = () => load(MY, null) ?? (() => { const ids = getOrders().filter((o) => o.channel === 'online' && !o.imported).map((o) => o.id); save(MY, ids); return ids; })();
   const addMyId = (id) => { const ids = myIds(); ids.unshift(id); save(MY, ids.slice(0, 200)); };
   async function api(path, opts = {}) {
-    const res = await fetch('api/' + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    const headers = { 'Content-Type': 'application/json' };
+    const pin = sessionStorage.getItem('bk_pin');
+    if (pin) headers['X-Kasir-Pin'] = pin;
+    const res = await fetch('api/' + path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (!res.ok) { const err = new Error(data.error || ('HTTP ' + res.status)); err.status = res.status; throw err; }
     return data;
   }
+  let serverChecked = null;
   async function detectServer() {
     try {
       const ctrl = new AbortController(); setTimeout(() => ctrl.abort(), 2500);
@@ -45,6 +49,7 @@
       SERVER.ai = !!(h.ollama && h.ollama.running);
       SERVER.model = (h.ollama && h.ollama.model) || '';
       SERVER.modelInstalled = !!(h.ollama && h.ollama.modelInstalled);
+      SERVER.publicUrl = h.publicUrl || '';
     } catch (e) { SERVER.on = false; SERVER.ai = false; }
     applyServerUi();
   }
@@ -65,7 +70,10 @@
       const incoming = merged.filter((o) => !prevIds.has(o.id) && o.status === 'Baru');
       if (!firstSync && incoming.length) { toast(`🔔 ${incoming.length} pesanan baru masuk!`); beep(); }
       return changed;
-    } catch (e) { return false; }
+    } catch (e) {
+      if (e.status === 401) { lockKasir(); toast('Sesi kasir berakhir, masukkan PIN lagi'); }
+      return false;
+    }
   }
   function beep() {
     try { const a = new (window.AudioContext || window.webkitAudioContext)(); const o = a.createOscillator(); o.frequency.value = 880; o.connect(a.destination); o.start(); setTimeout(() => { o.stop(); a.close(); }, 250); } catch (e) {}
@@ -438,13 +446,25 @@
     }
     else setTimeout(() => $('#pinInput').focus(), 100);
   }
-  function tryPin() {
-    if ($('#pinInput').value === C.kasirPin) { sessionStorage.setItem('bk_kasir', '1'); $('#pinInput').value = ''; $('#pinError').textContent = ''; renderKasir(); }
+  function unlock(pin) { sessionStorage.setItem('bk_kasir', '1'); if (pin) sessionStorage.setItem('bk_pin', pin); $('#pinInput').value = ''; $('#pinError').textContent = ''; renderKasir(); }
+  function lockKasir() { sessionStorage.removeItem('bk_kasir'); sessionStorage.removeItem('bk_pin'); renderKasir(); }
+  async function tryPin() {
+    const pin = $('#pinInput').value;
+    if (serverChecked) await serverChecked;
+    if (SERVER.on) {
+      // Mode server: PIN dicek di server (PIN di config.js tidak berlaku)
+      $('#btnPin').disabled = true;
+      try { await api('login', { method: 'POST', headers: { 'X-Kasir-Pin': pin } }); unlock(pin); }
+      catch (e) { $('#pinError').textContent = e.message || 'PIN salah'; $('#pinInput').value = ''; }
+      finally { $('#btnPin').disabled = false; }
+      return;
+    }
+    if (pin === C.kasirPin) unlock();
     else { $('#pinError').textContent = 'PIN salah'; $('#pinInput').value = ''; }
   }
   $('#btnPin').onclick = tryPin;
   $('#pinInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') tryPin(); });
-  $('#btnLock').onclick = () => { sessionStorage.removeItem('bk_kasir'); renderKasir(); };
+  $('#btnLock').onclick = lockKasir;
   $('#kasirTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-ktab]'); if (!b) return;
     $$('#kasirTabs button').forEach((x) => x.classList.toggle('active', x === b));
@@ -622,8 +642,12 @@
     const info = $('#serverInfo');
     if (SERVER.on) {
       info.className = 'server-info on';
-      info.textContent = '🖥️ Tersambung ke server lokal — pesanan tersinkron ke semua perangkat. ' +
-        (SERVER.ai ? (SERVER.modelInstalled ? `🤖 AI aktif (${SERVER.model})` : `⚠️ Model ${SERVER.model} belum di-pull`) : '🤖 Ollama tidak jalan');
+      info.innerHTML = '🖥️ Tersambung ke server — pesanan tersinkron ke semua perangkat. ' +
+        esc(SERVER.ai ? (SERVER.modelInstalled ? `🤖 AI aktif (${SERVER.model})` : `⚠️ Model ${SERVER.model} belum di-pull`) : '🤖 Ollama tidak jalan') +
+        (SERVER.publicUrl ? `<span class="pub">🌐 Link publik: <a href="${esc(SERVER.publicUrl)}" target="_blank" rel="noopener">${esc(SERVER.publicUrl.replace('https://', ''))}</a>
+          <button class="chip" id="btnCopyUrl" type="button">Salin</button></span>` : '');
+      const cp = $('#btnCopyUrl');
+      if (cp) cp.onclick = () => (navigator.clipboard ? navigator.clipboard.writeText(SERVER.publicUrl) : Promise.reject()).then(() => toast('Link publik disalin'), () => toast(SERVER.publicUrl));
     } else {
       info.className = 'server-info';
       info.textContent = '📱 Mode offline — data hanya tersimpan di perangkat ini.';
@@ -713,5 +737,7 @@
   /* ---------- Init ---------- */
   renderBrand(); renderMenu(); renderCartBar();
   if (location.hash === '#kasir') go('kasir');
-  detectServer().then(() => { if (currentView === 'kasir' && isUnlocked()) renderKasir(); });
+  serverChecked = detectServer().then(() => { if (currentView === 'kasir' && isUnlocked()) renderKasir(); });
+  // Link publik baru jadi beberapa detik setelah server start -> cek ulang
+  setInterval(() => { if (SERVER.on && !SERVER.publicUrl && currentView === 'kasir') detectServer(); }, 10000);
 })();

@@ -20,13 +20,30 @@ Satu proyek, dua cara jalan:
 
 Kalau Ollama tidak jalan, aplikasi tetap berfungsi normal — hanya fitur AI yang disembunyikan.
 
+### 🌐 Link publik (HP dari jaringan mana pun)
+Saat F5, server otomatis membuat **link HTTPS publik** lewat Cloudflare Tunnel (gratis, tanpa akun):
+```
+LINK PUBLIK (bisa dibuka HP mana pun, jaringan apa pun):
+https://kata-kata-acak.trycloudflare.com
+```
+- Pertama kali, `cloudflared.exe` (±50 MB) diunduh otomatis dari GitHub resmi Cloudflare ke folder `bin/`. Mac/Linux: `brew install cloudflared`.
+- Link juga tampil di **Kasir** (ada tombol *Salin*) untuk dibagikan ke WA/IG.
+- Lewat link publik **GPS & instal aplikasi di HP jalan** (karena HTTPS).
+- ⚠️ Link **berubah setiap kali server di-restart** → bagikan ulang. Untuk link tetap, butuh akun Cloudflare + domain sendiri (named tunnel).
+- Matikan link publik: set `BK_TUNNEL=0` atau ubah `PUBLIC_TUNNEL = False` di `baso_kuliner.py`.
+
+### Keamanan (mode server)
+- **PIN kasir dicek di server** (`KASIR_PIN` di bagian atas `baso_kuliner.py`). **Wajib diganti dari 1234** sebelum link publik dibagikan. PIN di `js/config.js` hanya untuk versi GitHub Pages.
+- Tanpa PIN, orang luar hanya bisa: lihat menu, kirim pesanan (status otomatis *Baru*), dan chat AI. Melihat/mengubah/menghapus pesanan & insight wajib PIN.
+- Anti-spam per IP: 10 pesanan/10 menit, 20 chat AI/5 menit, 5 PIN salah/5 menit.
+
 ### Fitur AI
 - **Pesan via AI** (tombol 🤖 di halaman menu): customer mengetik bebas, misal *"baso urat taican 2 pedas, es mangga 1"* → otomatis masuk keranjang dengan catatan. Menu yang tidak ada (mis. "rendang") ditolak server, tidak bisa masuk keranjang.
 - **Insight AI** (Kasir → Laporan): AI membaca angka laporan harian dan memberi poin insight + saran besok. Angka dihitung oleh aplikasi, AI hanya menafsirkan — tetap cek angka di kartu laporan.
 
 ### Catatan mode Python
 - **HP lewat WiFi**: HP harus satu WiFi dengan laptop; jika tidak bisa dibuka, izinkan Python di Windows Firewall (*Allow access* saat muncul popup pertama kali).
-- **GPS di HP via WiFi tidak jalan** (browser hanya mengizinkan GPS di HTTPS/localhost). Customer tetap bisa geser pin manual. Untuk customer dari luar, tetap pakai link GitHub Pages.
+- **GPS di HP via alamat WiFi `http://192.168...` tidak jalan** (browser hanya mengizinkan GPS di HTTPS). Pakai link publik trycloudflare agar GPS jalan.
 - **Laptop harus menyala** selama dipakai. Database: `data/baso_kuliner.db` — backup file ini atau export CSV rutin.
 - Status pesanan yang diubah kasir belum tampil otomatis di riwayat HP customer.
 

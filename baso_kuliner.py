@@ -21,8 +21,14 @@
    - Biarkan aplikasi Ollama tetap jalan.
 =====================================================================
 """
+import atexit
+import hmac
 import json
 import mimetypes
+import platform
+import re
+import subprocess
+import time
 import os
 import socket
 import sqlite3
@@ -31,6 +37,7 @@ import threading
 import urllib.error
 import urllib.request
 import webbrowser
+from collections import defaultdict, deque
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -41,12 +48,28 @@ OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen2.5:3b')   # bisa: llama3.2:3b, gemma2:2b, qwen2.5:7b
 OLLAMA_TIMEOUT = 120                          # detik (laptop tanpa GPU bisa lambat)
 OPEN_BROWSER = True
+
+# PIN kasir DICEK DI SERVER (wajib diganti sebelum link publik dibagikan!)
+# PIN di js/config.js hanya dipakai versi GitHub Pages.
+KASIR_PIN = os.environ.get('BK_PIN', '1234')
+
+# Link publik via Cloudflare Tunnel (gratis, HTTPS, bisa dibuka HP dari jaringan mana pun)
+PUBLIC_TUNNEL = os.environ.get('BK_TUNNEL', '1') != '0'
+
+# Batas anti-spam per alamat IP
+LIMITS = {
+    'order': (10, 600),     # maks 10 pesanan / 10 menit
+    'ai':    (20, 300),     # maks 20 chat AI / 5 menit
+    'pin':   (5, 300),      # maks 5 PIN salah / 5 menit
+}
 # ---------------------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DB_PATH = os.environ.get('BK_DB', os.path.join(DATA_DIR, 'baso_kuliner.db'))
-BLOCKED_PREFIXES = ('/data', '/tests', '/.git', '/node_modules')
+BLOCKED_PREFIXES = ('/data', '/tests', '/.git', '/node_modules', '/bin')
+BIN_DIR = os.path.join(BASE_DIR, 'bin')
+PUBLIC_URL = None
 BLOCKED_EXT = ('.py', '.pyc', '.db', '.sqlite')
 DB_LOCK = threading.Lock()
 mimetypes.add_type('application/manifest+json', '.json')
@@ -253,6 +276,117 @@ def ai_insight(body):
                                     {'role': 'user', 'content': '\n'.join(lines)}], temperature=0.3).strip()}
 
 
+# ========================= KEAMANAN =========================
+_hits = defaultdict(deque)
+_hits_lock = threading.Lock()
+
+
+def rate_limited(kind, ip):
+    """True jika IP ini sudah melewati batas untuk jenis aksi tersebut."""
+    limit, window = LIMITS[kind]
+    now = time.time()
+    with _hits_lock:
+        q = _hits[(kind, ip)]
+        while q and now - q[0] > window:
+            q.popleft()
+        if len(q) >= limit:
+            return True
+        q.append(now)
+        return False
+
+
+def pin_ok(given):
+    return hmac.compare_digest(str(given or ''), str(KASIR_PIN))
+
+
+# ===================== CLOUDFLARE TUNNEL =====================
+TUNNEL_RE = re.compile(r'https://[-a-z0-9]+\.trycloudflare\.com')
+_tunnel_proc = None
+
+
+def find_cloudflared():
+    exe = 'cloudflared.exe' if os.name == 'nt' else 'cloudflared'
+    local = os.path.join(BIN_DIR, exe)
+    if os.path.isfile(local):
+        return local
+    from shutil import which
+    return which('cloudflared')
+
+
+def download_cloudflared():
+    """Unduh cloudflared resmi dari GitHub Cloudflare (hanya Windows 64-bit)."""
+    if os.name != 'nt':
+        return None
+    arch = 'amd64' if platform.machine().endswith('64') else '386'
+    url = f'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-{arch}.exe'
+    os.makedirs(BIN_DIR, exist_ok=True)
+    dest = os.path.join(BIN_DIR, 'cloudflared.exe')
+    print('  Mengunduh cloudflared (±50 MB, sekali saja)...')
+    tmp = dest + '.part'
+    urllib.request.urlretrieve(url, tmp)
+    os.replace(tmp, dest)
+    return dest
+
+
+def kill_old_tunnel():
+    """Matikan tunnel sisa run sebelumnya (mis. setelah Restart Shell di IDLE)."""
+    pid_file = os.path.join(DATA_DIR, 'tunnel.pid')
+    try:
+        pid = int(open(pid_file).read().strip())
+    except Exception:
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True)
+        else:
+            os.kill(pid, 15)
+    except Exception:
+        pass
+
+
+def stop_tunnel():
+    if _tunnel_proc and _tunnel_proc.poll() is None:
+        _tunnel_proc.terminate()
+
+
+def start_tunnel(port, on_url):
+    """Jalankan quick tunnel; panggil on_url(url) saat link publik sudah jadi."""
+    global _tunnel_proc
+    exe = find_cloudflared()
+    if not exe:
+        try:
+            exe = download_cloudflared()
+        except Exception as e:
+            print(f'  Gagal mengunduh cloudflared: {e}')
+            exe = None
+    if not exe:
+        print('  Link publik   : cloudflared belum terpasang.')
+        print('                  Windows: winget install Cloudflare.cloudflared  |  Mac: brew install cloudflared')
+        return
+    kill_old_tunnel()
+    flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    _tunnel_proc = subprocess.Popen([exe, 'tunnel', '--url', f'http://localhost:{port}', '--no-autoupdate'],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    encoding='utf-8', errors='replace', creationflags=flags)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(os.path.join(DATA_DIR, 'tunnel.pid'), 'w') as f:
+        f.write(str(_tunnel_proc.pid))
+    atexit.register(stop_tunnel)
+
+    def reader():
+        found = False
+        log = open(os.path.join(DATA_DIR, 'tunnel.log'), 'w', encoding='utf-8')
+        for line in _tunnel_proc.stdout:          # wajib dibaca terus agar pipe tidak penuh
+            log.write(line); log.flush()
+            m = TUNNEL_RE.search(line)
+            if m and not found:
+                found = True
+                on_url(m.group(0))
+        if not found:
+            print('  Link publik   : tunnel gagal dibuat. Cek data/tunnel.log')
+    threading.Thread(target=reader, daemon=True).start()
+
+
 # ============================ HTTP ==============================
 class Handler(SimpleHTTPRequestHandler):
     server_version = 'BasoKuliner/1.0'
@@ -267,6 +401,22 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store' if self.path.startswith('/api/') else 'no-cache')
         super().end_headers()
+
+    def client_ip(self):
+        return (self.headers.get('CF-Connecting-IP')
+                or (self.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+                or self.client_address[0])
+
+    def require_pin(self):
+        """Kembalikan True jika PIN valid; jika tidak, kirim 401/429 dan kembalikan False."""
+        ip = self.client_ip()
+        if pin_ok(self.headers.get('X-Kasir-Pin')):
+            return True
+        if rate_limited('pin', ip):
+            self.send_json({'error': 'Terlalu banyak PIN salah. Coba lagi 5 menit lagi.'}, 429)
+        else:
+            self.send_json({'error': 'PIN kasir salah'}, 401)
+        return False
 
     def send_json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -307,13 +457,27 @@ class Handler(SimpleHTTPRequestHandler):
         q = parse_qs(url.query)
         try:
             if p == '/api/health' and method == 'GET':
-                return self.send_json({'ok': True, 'server': True, 'ollama': ollama_status()})
+                return self.send_json({'ok': True, 'server': True, 'ollama': ollama_status(), 'publicUrl': PUBLIC_URL})
+            if p == '/api/login' and method == 'POST':
+                return self.send_json({'ok': True}) if self.require_pin() else None
             if p == '/api/orders' and method == 'GET':
+                if not self.require_pin():
+                    return
                 return self.send_json({'orders': list_orders((q.get('date') or [None])[0])})
             if p == '/api/orders' and method == 'POST':
-                created = save_order(self.read_json())
+                o = self.read_json()
+                is_kasir = pin_ok(self.headers.get('X-Kasir-Pin'))
+                if not is_kasir:
+                    if rate_limited('order', self.client_ip()):
+                        return self.send_json({'error': 'Terlalu banyak pesanan dari perangkat ini, coba lagi nanti.'}, 429)
+                    if o.get('channel') != 'online':          # transaksi POS/impor hanya boleh dari kasir
+                        return self.send_json({'error': 'PIN kasir dibutuhkan'}, 401)
+                    o['status'] = 'Baru'
+                created = save_order(o)
                 return self.send_json({'ok': True, 'created': created}, 201 if created else 200)
             if p.startswith('/api/orders/'):
+                if not self.require_pin():
+                    return
                 oid = p.split('/')[-1]
                 if method == 'PATCH':
                     o = update_order(oid, self.read_json())
@@ -321,8 +485,12 @@ class Handler(SimpleHTTPRequestHandler):
                 if method == 'DELETE':
                     return self.send_json({'ok': delete_order(oid)})
             if p == '/api/ai/chat' and method == 'POST':
+                if rate_limited('ai', self.client_ip()):
+                    return self.send_json({'error': 'Chat AI lagi ramai, coba lagi beberapa menit lagi ya.'}, 429)
                 return self.send_json(ai_order_chat(self.read_json()))
             if p == '/api/ai/insight' and method == 'POST':
+                if not self.require_pin():
+                    return
                 return self.send_json(ai_insight(self.read_json()))
             return self.send_json({'error': 'Endpoint tidak ada'}, 404)
         except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as e:
@@ -372,8 +540,24 @@ def main():
         print(f'                 Jalankan di Command Prompt: ollama pull {OLLAMA_MODEL}')
     else:
         print(f'  Ollama       : OK ({OLLAMA_MODEL})')
+    if KASIR_PIN == '1234':
+        print('  PERINGATAN   : PIN kasir masih 1234. Ganti KASIR_PIN di atas file ini!')
     print('  Stop server  : Ctrl+C  (atau Shell > Restart Shell di IDLE)')
     print('=' * 60)
+
+    def announce(url):
+        global PUBLIC_URL
+        PUBLIC_URL = url
+        print('\n' + '*' * 60)
+        print('  LINK PUBLIK (bisa dibuka HP mana pun, jaringan apa pun):')
+        print(f'  {url}')
+        print(f'  Kasir: {url}/#kasir')
+        print('  Link ini BERUBAH setiap kali server dijalankan ulang.')
+        print('*' * 60)
+
+    if PUBLIC_TUNNEL:
+        print('  Link publik  : sedang dibuat (5-20 detik)...')
+        threading.Thread(target=start_tunnel, args=(port, announce), daemon=True).start()
     if OPEN_BROWSER and not os.environ.get('BK_NO_BROWSER'):
         threading.Timer(1.0, lambda: webbrowser.open(f'http://localhost:{port}')).start()
     try:
@@ -381,6 +565,7 @@ def main():
     except KeyboardInterrupt:
         print('\nServer dihentikan.')
     finally:
+        stop_tunnel()
         httpd.server_close()
 
 

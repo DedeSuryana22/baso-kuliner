@@ -262,3 +262,6 @@ details[open] summary { margin-bottom: 8px; }
 .server-info { margin: -4px 16px 12px; font-size: 12px; padding: 8px 10px; border-radius: 10px; background: #F6EDE4; color: var(--muted); }
 .server-info.on { background: #E6F6F3; color: #1D6F64; }
 .insight { font-size: 14px; white-space: pre-wrap; margin-bottom: 10px; line-height: 1.5; }
+.server-info .pub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; font-weight: 600; }
+.server-info .pub a { color: #1D6F64; word-break: break-all; }
+.server-info .chip { padding: 4px 10px; font-size: 11.5px; }
