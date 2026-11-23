@@ -43,7 +43,15 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 # ------------------------- KONFIGURASI -------------------------
-PORT = 8000                                   # ganti kalau bentrok
+PORT = int(os.environ.get('PORT', 8000))      # Railway mengisi PORT otomatis
+
+# Jalan di Railway (cloud)? -> tanpa tunnel, tanpa buka browser, link = domain Railway
+ON_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('RAILWAY_PUBLIC_DOMAIN'))
+
+# Penyedia AI: 'gemini' (cloud, gratis via Google AI Studio) atau 'ollama' (lokal di laptop)
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_MODELS = [m.strip() for m in os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash,gemini-3.8-flash,gemini-3.5-flash-lite').split(',') if m.strip()]
+AI_PROVIDER = os.environ.get('AI_PROVIDER', 'gemini' if GEMINI_API_KEY else 'ollama').lower()
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'qwen2.5:3b')   # bisa: llama3.2:3b, gemma2:2b, qwen2.5:7b
 OLLAMA_TIMEOUT = 120                          # detik (laptop tanpa GPU bisa lambat)
@@ -55,7 +63,7 @@ KASIR_PIN = '1234'          # contoh: KASIR_PIN = '739215'   (pakai 6 digit)
 KASIR_PIN = os.environ.get('BK_PIN', KASIR_PIN)
 
 # Link publik via Cloudflare Tunnel (gratis, HTTPS, bisa dibuka HP dari jaringan mana pun)
-PUBLIC_TUNNEL = os.environ.get('BK_TUNNEL', '1') != '0'
+PUBLIC_TUNNEL = os.environ.get('BK_TUNNEL', '1') != '0' and not ON_RAILWAY
 
 # Batas anti-spam per alamat IP
 LIMITS = {
@@ -72,7 +80,7 @@ DB_PATH = os.environ.get('BK_DB', os.path.join(DATA_DIR, 'baso_kuliner.db'))
 ALLOWED_FILES = {'/', '/index.html', '/manifest.json', '/sw.js', '/favicon.ico'}
 ALLOWED_DIRS = ('/css/', '/js/', '/vendor/', '/assets/')
 BIN_DIR = os.path.join(BASE_DIR, 'bin')
-PUBLIC_URL = None
+PUBLIC_URL = ('https://' + os.environ['RAILWAY_PUBLIC_DOMAIN']) if os.environ.get('RAILWAY_PUBLIC_DOMAIN') else None
 BLOCKED_EXT = ('.py', '.pyc', '.db', '.sqlite')
 DB_LOCK = threading.Lock()
 mimetypes.add_type('application/manifest+json', '.json')
@@ -190,6 +198,53 @@ def ollama_chat(messages, fmt=None, temperature=0.2):
     return (res.get('message') or {}).get('content', '')
 
 
+# ============================ GEMINI ============================
+def gemini_chat(messages, json_mode=False, temperature=0.2):
+    """Panggil Gemini REST; coba model berikutnya bila sibuk (429/500/503) — sama seperti bot Lark."""
+    system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
+    contents = [{'role': 'model' if m['role'] == 'assistant' else 'user', 'parts': [{'text': m['content']}]}
+                for m in messages if m['role'] != 'system']
+    cfg = {'temperature': temperature}
+    if json_mode:
+        cfg['responseMimeType'] = 'application/json'
+    body = json.dumps({'systemInstruction': {'parts': [{'text': system}]}, 'contents': contents,
+                       'generationConfig': cfg}).encode()
+    errors = []
+    for model in GEMINI_MODELS:
+        url = f"{os.environ.get('GEMINI_URL', 'https://generativelanguage.googleapis.com')}/v1beta/models/{model}:generateContent"
+        req = urllib.request.Request(url, data=body, method='POST',
+                                     headers={'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                res = json.loads(r.read().decode())
+            parts = ((res.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
+            text = ''.join(p.get('text', '') for p in parts).strip()
+            if text:
+                return text
+            errors.append(f'{model}: jawaban kosong')
+        except urllib.error.HTTPError as e:
+            errors.append(f'{model}: HTTP {e.code}')
+            if e.code not in (404, 429, 500, 503):
+                break
+        except Exception as e:
+            errors.append(f'{model}: {e}')
+    raise ConnectionError('AI Gemini sedang tidak tersedia (' + '; '.join(errors) + ')')
+
+
+def ai_status():
+    if AI_PROVIDER == 'gemini':
+        return {'running': bool(GEMINI_API_KEY), 'model': GEMINI_MODELS[0] if GEMINI_MODELS else '',
+                'modelInstalled': bool(GEMINI_API_KEY), 'provider': 'gemini'}
+    st = ollama_status(); st['provider'] = 'ollama'
+    return st
+
+
+def ai_chat(messages, fmt=None, temperature=0.2):
+    if AI_PROVIDER == 'gemini':
+        return gemini_chat(messages, json_mode=fmt is not None, temperature=temperature)
+    return ollama_chat(messages, fmt=fmt, temperature=temperature)
+
+
 def rupiah(n):
     return 'Rp ' + f'{int(n or 0):,}'.replace(',', '.')
 
@@ -229,7 +284,7 @@ ATURAN:
     for m in history[-8:]:
         if m.get('role') in ('user', 'assistant') and m.get('content'):
             msgs.append({'role': m['role'], 'content': str(m['content'])[:1000]})
-    raw = ollama_chat(msgs, fmt=ORDER_SCHEMA)
+    raw = ai_chat(msgs, fmt=ORDER_SCHEMA)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -275,7 +330,7 @@ def ai_insight(body):
               "Gunakan HANYA angka dari data. Jangan mengarang angka, target, atau tren yang tidak ada di data. "
               "Jika data sedikit, katakan datanya belum cukup untuk menyimpulkan pola. "
               f"Menu yang dijual: {menu_names}.")
-    return {'insight': ollama_chat([{'role': 'system', 'content': system},
+    return {'insight': ai_chat([{'role': 'system', 'content': system},
                                     {'role': 'user', 'content': '\n'.join(lines)}], temperature=0.3).strip()}
 
 
@@ -406,9 +461,12 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def client_ip(self):
-        return (self.headers.get('CF-Connecting-IP')
-                or (self.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
-                or self.client_address[0])
+        # Hanya percaya header dari proxy yang memang dipakai (header lain bisa dipalsukan)
+        if ON_RAILWAY:
+            return self.headers.get('X-Real-IP') or (self.headers.get('X-Forwarded-For') or '').split(',')[0].strip() or self.client_address[0]
+        if self.client_address[0] in ('127.0.0.1', '::1'):     # lewat Cloudflare Tunnel / laptop sendiri
+            return self.headers.get('CF-Connecting-IP') or self.client_address[0]
+        return self.client_address[0]
 
     def require_pin(self):
         """Kembalikan True jika PIN valid; jika tidak, kirim 401/429 dan kembalikan False."""
@@ -460,7 +518,7 @@ class Handler(SimpleHTTPRequestHandler):
         q = parse_qs(url.query)
         try:
             if p == '/api/health' and method == 'GET':
-                return self.send_json({'ok': True, 'server': True, 'ollama': ollama_status(), 'publicUrl': PUBLIC_URL})
+                return self.send_json({'ok': True, 'server': True, 'ollama': ai_status(), 'publicUrl': PUBLIC_URL})
             if p == '/api/login' and method == 'POST':
                 return self.send_json({'ok': True}) if self.require_pin() else None
             if p == '/api/orders' and method == 'GET':
@@ -497,6 +555,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(ai_insight(self.read_json()))
             return self.send_json({'error': 'Endpoint tidak ada'}, 404)
         except (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout) as e:
+            if AI_PROVIDER == 'gemini':
+                return self.send_json({'error': f'{e}. Coba lagi sebentar ya.'}, 503)
             return self.send_json({'error': f'Ollama tidak bisa dihubungi ({e}). Pastikan aplikasi Ollama jalan dan model {OLLAMA_MODEL} sudah di-pull.'}, 503)
         except (ValueError, json.JSONDecodeError) as e:
             return self.send_json({'error': str(e)}, 400)
@@ -528,15 +588,20 @@ def start_server(port=PORT):
 def main():
     init_db()
     httpd, port = start_server()
-    st = ollama_status()
+    st = ai_status()
     print('=' * 60)
-    print('  BASO KULINER — server jalan')
+    print('  BASO KULINER — server jalan' + (' (Railway)' if ON_RAILWAY else ''))
     print('=' * 60)
-    print(f'  Laptop ini   : http://localhost:{port}')
-    print(f'  HP (1 WiFi)  : http://{lan_ip()}:{port}')
-    print(f'  Halaman kasir: http://localhost:{port}/#kasir')
+    if ON_RAILWAY:
+        print(f'  Link publik  : {PUBLIC_URL or "(belum ada domain — generate domain di Railway)"}')
+    else:
+        print(f'  Laptop ini   : http://localhost:{port}')
+        print(f'  HP (1 WiFi)  : http://{lan_ip()}:{port}')
+        print(f'  Halaman kasir: http://localhost:{port}/#kasir')
     print(f'  Database     : {DB_PATH}')
-    if not st['running']:
+    if AI_PROVIDER == 'gemini':
+        print(f'  AI           : Gemini ({", ".join(GEMINI_MODELS)})' if GEMINI_API_KEY else '  AI           : GEMINI_API_KEY kosong -> AI nonaktif')
+    elif not st['running']:
         print(f'  Ollama       : TIDAK JALAN -> fitur AI nonaktif (aplikasi lain tetap jalan)')
     elif not st['modelInstalled']:
         print(f'  Ollama       : jalan, tapi model {OLLAMA_MODEL} belum ada.')
@@ -561,7 +626,7 @@ def main():
     if PUBLIC_TUNNEL:
         print('  Link publik  : sedang dibuat (5-20 detik)...')
         threading.Thread(target=start_tunnel, args=(port, announce), daemon=True).start()
-    if OPEN_BROWSER and not os.environ.get('BK_NO_BROWSER'):
+    if OPEN_BROWSER and not ON_RAILWAY and not os.environ.get('BK_NO_BROWSER'):
         threading.Timer(1.0, lambda: webbrowser.open(f'http://localhost:{port}')).start()
     try:
         httpd.serve_forever()
