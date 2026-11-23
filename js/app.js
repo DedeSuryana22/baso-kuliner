@@ -23,6 +23,54 @@
   const getOrders = () => load(KEY.orders, []);
   const setOrders = (o) => save(KEY.orders, o);
 
+  /* ---------- Mode server (Python + SQLite + Ollama) ----------
+     Jika aplikasi dibuka dari baso_kuliner.py, pesanan disimpan juga ke server
+     sehingga semua perangkat melihat data yang sama. Di GitHub Pages /api tidak
+     ada, jadi aplikasi otomatis kembali ke mode localStorage seperti biasa. */
+  const SERVER = { on: false, ai: false, model: '', modelInstalled: false };
+  const MY = 'bk_my_orders';
+  const myIds = () => load(MY, null) ?? (() => { const ids = getOrders().filter((o) => o.channel === 'online' && !o.imported).map((o) => o.id); save(MY, ids); return ids; })();
+  const addMyId = (id) => { const ids = myIds(); ids.unshift(id); save(MY, ids.slice(0, 200)); };
+  async function api(path, opts = {}) {
+    const res = await fetch('api/' + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+  async function detectServer() {
+    try {
+      const ctrl = new AbortController(); setTimeout(() => ctrl.abort(), 2500);
+      const h = await api('health', { signal: ctrl.signal });
+      SERVER.on = !!h.server;
+      SERVER.ai = !!(h.ollama && h.ollama.running);
+      SERVER.model = (h.ollama && h.ollama.model) || '';
+      SERVER.modelInstalled = !!(h.ollama && h.ollama.modelInstalled);
+    } catch (e) { SERVER.on = false; SERVER.ai = false; }
+    applyServerUi();
+  }
+  const pushOrder = (o) => { if (SERVER.on) api('orders', { method: 'POST', body: JSON.stringify(o), keepalive: true }).catch(() => {}); };
+  let lastSig = '';
+  async function syncOrders() {
+    if (!SERVER.on) return false;
+    try {
+      const { orders: remote } = await api('orders');
+      const ids = new Set(remote.map((o) => o.id));
+      const localOnly = getOrders().filter((o) => !ids.has(o.id));
+      await Promise.all(localOnly.map((o) => api('orders', { method: 'POST', body: JSON.stringify(o) }).catch(() => {})));
+      const merged = [...remote, ...localOnly].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const sig = merged.map((o) => o.id + o.status).join('|');
+      const changed = sig !== lastSig, firstSync = !lastSig;
+      const prevIds = new Set(getOrders().map((o) => o.id));
+      setOrders(merged); lastSig = sig;
+      const incoming = merged.filter((o) => !prevIds.has(o.id) && o.status === 'Baru');
+      if (!firstSync && incoming.length) { toast(`🔔 ${incoming.length} pesanan baru masuk!`); beep(); }
+      return changed;
+    } catch (e) { return false; }
+  }
+  function beep() {
+    try { const a = new (window.AudioContext || window.webkitAudioContext)(); const o = a.createOscillator(); o.frequency.value = 880; o.connect(a.destination); o.start(); setTimeout(() => { o.stop(); a.close(); }, 250); } catch (e) {}
+  }
+
   function toast(msg) {
     const t = $('#toast'); t.textContent = msg; t.classList.add('show');
     clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2400);
@@ -180,6 +228,8 @@
   function renderCartBar() {
     const show = state.cart.length && currentView === 'menu';
     $('#cartBar').classList.toggle('hidden', !show);
+    $('#aiFab').classList.toggle('hidden', !(SERVER.ai && currentView === 'menu'));
+    $('#aiFab').classList.toggle('low', !show);
     $('#cartCount').textContent = cartQty();
     $('#cartTotal').textContent = rupiah(cartSubtotal());
   }
@@ -343,6 +393,7 @@
     };
     const msg = BK.buildWaMessage(order, C.brand.name);
     const orders = getOrders(); orders.unshift(order); setOrders(orders);
+    addMyId(order.id); pushOrder(order);
     save(KEY.cust, { name, wa: $('#custWa').value.trim(), address });
     state.cart = []; persistCart();
     const url = BK.waLink(C.whatsappAdmin, msg);
@@ -355,7 +406,8 @@
   /* ---------- Riwayat (customer) ---------- */
   function statusClass(s) { return 'st-' + String(s).toLowerCase(); }
   function renderHistory() {
-    const list = getOrders().filter((o) => o.channel === 'online' && !o.imported);
+    const mine = new Set(myIds());
+    const list = getOrders().filter((o) => mine.has(o.id));
     $('#historyList').innerHTML = list.length ? list.map((o) => `
       <div class="card order">
         <div class="order-head"><b>${o.id}</b><span class="status ${statusClass(o.status)}">${o.status}</span></div>
@@ -380,7 +432,10 @@
   function renderKasir() {
     $('#pinGate').classList.toggle('hidden', isUnlocked());
     $('#kasirApp').classList.toggle('hidden', !isUnlocked());
-    if (isUnlocked()) { renderPos(); renderOrders(); renderReport(); }
+    if (isUnlocked()) {
+      renderPos(); renderOrders(); renderReport(); applyServerUi();
+      syncOrders().then((ch) => { if (ch) { renderOrders(); renderReport(); } });
+    }
     else setTimeout(() => $('#pinInput').focus(), 100);
   }
   function tryPin() {
@@ -462,7 +517,7 @@
       payment: state.pos.pay, cashReceived: state.pos.pay === 'Tunai' ? cash : total, change: state.pos.pay === 'Tunai' ? cash - total : 0,
       customer: { name: $('#posName').value.trim(), wa: '', address: '' }, location: null,
     };
-    const orders = getOrders(); orders.unshift(order); setOrders(orders);
+    const orders = getOrders(); orders.unshift(order); setOrders(orders); pushOrder(order);
     toast(`Tersimpan ${order.id}` + (order.change ? ` · Kembalian ${rupiah(order.change)}` : ''));
     $('#btnPosClear').click(); renderReport(); renderOrders();
   };
@@ -497,8 +552,15 @@
   $('#orderList').addEventListener('click', (e) => {
     const st = e.target.closest('[data-st]'), del = e.target.closest('[data-del]');
     const orders = getOrders();
-    if (st) { const o = orders.find((x) => x.id === st.dataset.oid); o.status = st.dataset.st; o.updatedAt = new Date().toISOString(); setOrders(orders); renderOrders(); }
-    if (del && confirmDelete(del.dataset.del)) { setOrders(orders.filter((x) => x.id !== del.dataset.del)); renderOrders(); renderReport(); toast('Pesanan dihapus'); }
+    if (st) {
+      const o = orders.find((x) => x.id === st.dataset.oid); o.status = st.dataset.st; o.updatedAt = new Date().toISOString(); setOrders(orders); renderOrders();
+      if (SERVER.on) api('orders/' + encodeURIComponent(o.id), { method: 'PATCH', body: JSON.stringify({ status: o.status }) }).catch(() => toast('Gagal simpan status ke server'));
+    }
+    if (del && confirmDelete(del.dataset.del)) {
+      const id = del.dataset.del;
+      setOrders(orders.filter((x) => x.id !== id)); renderOrders(); renderReport(); toast('Pesanan dihapus');
+      if (SERVER.on) api('orders/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => toast('Gagal hapus di server'));
+    }
   });
   // Konfirmasi hapus dengan tap dua kali (menghindari dialog browser)
   const pendingDel = {};
@@ -511,7 +573,7 @@
     if (!o) return toast('Format pesan tidak dikenali');
     const orders = getOrders();
     if (orders.some((x) => x.id === o.id)) return toast(`Pesanan ${o.id} sudah ada`);
-    orders.unshift(o); setOrders(orders); $('#importText').value = '';
+    orders.unshift(o); setOrders(orders); pushOrder(o); $('#importText').value = '';
     toast(`Pesanan ${o.id} diimpor`); renderOrders(); renderReport();
   };
 
@@ -519,6 +581,7 @@
   function renderReport() {
     const di = $('#reportDate'); if (!di.value) di.value = BK.localDateKey(new Date());
     const r = BK.buildReport(getOrders(), di.value);
+    state.lastReport = r;
     $('#reportStats').innerHTML = `
       <div class="stat main"><small>Omzet (termasuk ongkir)</small><b>${rupiah(r.total)}</b></div>
       <div class="stat"><small>Omzet makanan</small><b>${rupiah(r.subtotal)}</b></div>
@@ -553,7 +616,102 @@
   // Sinkron antar-tab di perangkat yang sama
   window.addEventListener('storage', (e) => { if (e.key === KEY.orders && currentView === 'kasir' && isUnlocked()) { renderOrders(); renderReport(); } });
 
+  /* ================= ASISTEN AI (Ollama) ================= */
+  const chat = [];   // {role, content}
+  function applyServerUi() {
+    const info = $('#serverInfo');
+    if (SERVER.on) {
+      info.className = 'server-info on';
+      info.textContent = '🖥️ Tersambung ke server lokal — pesanan tersinkron ke semua perangkat. ' +
+        (SERVER.ai ? (SERVER.modelInstalled ? `🤖 AI aktif (${SERVER.model})` : `⚠️ Model ${SERVER.model} belum di-pull`) : '🤖 Ollama tidak jalan');
+    } else {
+      info.className = 'server-info';
+      info.textContent = '📱 Mode offline — data hanya tersimpan di perangkat ini.';
+    }
+    $('#insightCard').classList.toggle('hidden', !SERVER.ai);
+    $('#aiModel').textContent = SERVER.model ? `Ollama · ${SERVER.model}` : '';
+    renderCartBar();
+  }
+  function addMsg(role, text, extra) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + role;
+    div.textContent = text;
+    if (extra) { const e = document.createElement('div'); e.className = 'added'; e.textContent = extra; div.appendChild(e); }
+    $('#aiMessages').appendChild(div);
+    $('#aiMessages').scrollTop = $('#aiMessages').scrollHeight;
+    return div;
+  }
+  function openAi() {
+    $('#aiSheet').classList.remove('hidden');
+    if (!$('#aiMessages').children.length) {
+      addMsg('bot', `Halo! Aku asisten ${C.brand.name} 👋\nKetik aja mau pesan apa, misal "baso urat taican 2 pedas, es mangga 1". Nanti aku masukin ke keranjang.`);
+    }
+    setTimeout(() => $('#aiInput').focus(), 150);
+  }
+  async function sendAi(text) {
+    text = text.trim(); if (!text) return;
+    addMsg('user', text); chat.push({ role: 'user', content: text });
+    $('#aiInput').value = ''; $('#aiSend').disabled = true;
+    const typing = addMsg('bot typing', 'Asisten sedang mengetik…');
+    try {
+      const res = await api('ai/chat', { method: 'POST', body: JSON.stringify({
+        messages: chat, brand: C.brand.name, shipping: C.shipping,
+        menu: C.menu.map(({ id, name, price, category, desc }) => ({ id, name, price, category, desc })),
+      }) });
+      typing.remove();
+      const added = [];
+      (res.items || []).forEach((it) => {
+        const m = C.menu.find((x) => x.id === it.menuId);
+        if (m) { addToCart(m, it.qty, it.note || ''); added.push(`✓ ${m.name} x${it.qty}${it.note ? ` (${it.note})` : ''}`); }
+      });
+      const extra = added.length ? `Masuk keranjang:\n${added.join('\n')}\nSubtotal keranjang: ${rupiah(cartSubtotal())}` : '';
+      addMsg('bot', res.reply, extra);
+      chat.push({ role: 'assistant', content: res.reply + (added.length ? `\n[Ditambahkan: ${added.join(', ')}]` : '') });
+      if (added.length) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-primary sm'; btn.textContent = 'Lanjut Checkout →';
+        btn.onclick = () => { $('#aiSheet').classList.add('hidden'); go('checkout'); };
+        $('#aiMessages').appendChild(btn); $('#aiMessages').scrollTop = $('#aiMessages').scrollHeight;
+      }
+    } catch (e) {
+      typing.remove(); chat.pop();
+      addMsg('bot err', '⚠️ ' + e.message);
+    } finally { $('#aiSend').disabled = false; }
+  }
+  $('#aiFab').onclick = openAi;
+  $('#aiClose').onclick = () => $('#aiSheet').classList.add('hidden');
+  $('#aiSheet').addEventListener('click', (e) => { if (e.target.id === 'aiSheet') $('#aiSheet').classList.add('hidden'); });
+  $('#aiForm').addEventListener('submit', (e) => { e.preventDefault(); sendAi($('#aiInput').value); });
+  $('#aiSuggest').addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (b) sendAi(b.dataset.q); });
+
+  $('#btnInsight').onclick = async () => {
+    const r = state.lastReport;
+    if (!r || !r.count) return toast('Belum ada transaksi di tanggal ini');
+    const btn = $('#btnInsight'); btn.disabled = true; btn.textContent = '🤖 AI sedang menganalisa…';
+    const hours = {};
+    r.orders.forEach((o) => { const h = new Date(o.createdAt).getHours(); hours[h] = (hours[h] || 0) + 1; });
+    try {
+      const res = await api('ai/insight', { method: 'POST', body: JSON.stringify({
+        date: $('#reportDate').value,
+        report: { total: r.total, subtotal: r.subtotal, shipping: r.shipping, count: r.count, porsi: r.porsi, online: r.online, pos: r.pos,
+          perItem: r.perItem, perPay: r.perPay, hours: Object.entries(hours).sort((a, b) => a[0] - b[0]).map(([h, n]) => `${String(h).padStart(2, '0')}:00 (${n} trx)`) },
+        menu: C.menu.map(({ name }) => ({ name })),
+      }) });
+      $('#insightText').textContent = res.insight;
+    } catch (e) { $('#insightText').textContent = '⚠️ ' + e.message; }
+    finally { btn.disabled = false; btn.textContent = 'Buat Ulang Insight'; }
+  };
+  $('#reportDate').addEventListener('change', () => { $('#insightText').innerHTML = '<p class="hint">Minta AI membaca laporan tanggal ini.</p>'; $('#btnInsight').textContent = 'Buat Insight'; });
+
+  // Polling pesanan baru tiap 5 detik saat kasir terbuka (mode server)
+  setInterval(async () => {
+    if (SERVER.on && currentView === 'kasir' && isUnlocked()) {
+      if (await syncOrders()) { renderOrders(); renderReport(); }
+    }
+  }, 5000);
+
   /* ---------- Init ---------- */
   renderBrand(); renderMenu(); renderCartBar();
   if (location.hash === '#kasir') go('kasir');
+  detectServer().then(() => { if (currentView === 'kasir' && isUnlocked()) renderKasir(); });
 })();

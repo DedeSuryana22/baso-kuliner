@@ -236,3 +236,29 @@ details[open] summary { margin-bottom: 8px; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 @media (min-width: 481px) { .app { box-shadow: 0 0 40px rgba(0,0,0,.08); } }
+
+/* ---------- Mode server & Asisten AI ---------- */
+.ai-fab { position: fixed; right: max(16px, calc(50% - 224px)); bottom: calc(var(--nav-h) + 84px + env(safe-area-inset-bottom)); z-index: 19;
+  background: #fff; color: var(--red); border: 2px solid var(--red); border-radius: 99px; padding: 10px 16px; font-weight: 800; font-size: 14px;
+  box-shadow: 0 8px 20px rgba(214, 40, 40, .25); }
+.ai-fab.low { bottom: calc(var(--nav-h) + 14px + env(safe-area-inset-bottom)); }
+.ai-sheet { display: flex; flex-direction: column; height: 85vh; }
+.ai-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.ai-head .logo { width: 40px; height: 40px; font-size: 22px; background: #FFF1E6; box-shadow: none; }
+.ai-head small { display: block; }
+.sheet-close.static { position: static; margin-left: auto; box-shadow: none; background: #F6EDE4; }
+.ai-messages { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; background: var(--cream); }
+.msg { max-width: 85%; padding: 10px 12px; border-radius: 14px; font-size: 14px; white-space: pre-wrap; line-height: 1.45; }
+.msg.user { align-self: flex-end; background: var(--red); color: #fff; border-bottom-right-radius: 4px; }
+.msg.bot { align-self: flex-start; background: #fff; border-bottom-left-radius: 4px; box-shadow: var(--shadow); }
+.msg.err { background: #FDECEC; color: var(--red-dark); }
+.msg .added { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 12.5px; color: #1D6F64; }
+.msg.typing { color: var(--muted); font-style: italic; }
+.ai-suggest { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px 0; }
+.ai-suggest .chip { font-size: 12px; padding: 6px 10px; }
+.ai-form { display: flex; gap: 8px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); }
+.ai-form input { margin: 0; }
+.ai-form .btn { flex: none; }
+.server-info { margin: -4px 16px 12px; font-size: 12px; padding: 8px 10px; border-radius: 10px; background: #F6EDE4; color: var(--muted); }
+.server-info.on { background: #E6F6F3; color: #1D6F64; }
+.insight { font-size: 14px; white-space: pre-wrap; margin-bottom: 10px; line-height: 1.5; }
